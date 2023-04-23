@@ -70,11 +70,11 @@ def run_MCMC_ARMApq(y, draws, model):
         # x_eff = x[m:]
         y = y # - beta * x - alpha
 
-        residuals = np.zeros_like(y)
+        residuals = tt.zeros_like(y)
         for t in range(len(y)):
-            ar_terms = tt.dot(phi, y[t - p:t][::-1]) if t >= p else 0
-            ma_terms = tt.dot(theta, residuals[t - q:t][::-1]) if t >= q else 0
-            residuals[t] = y[t] - ar_terms - ma_terms 
+            ar_terms = tt.dot(phi, y[t - p:t][::-1]) if t >= p else tt.zeros_like(y[t])
+            ma_terms = tt.dot(theta, residuals[t - q:t][::-1]) if t >= q else tt.zeros_like(y[t])
+            tt.set_subtensor(residuals[t], y[t] - ar_terms - ma_terms, inplace=True)
 
         mu = tt.add(*[phi[i] * residuals[p - (i + 1):-(i + 1)] for i in range(p)])[m-q:] + tt.add(*[theta[i] * residuals[q - (i + 1):-(i + 1)] for i in range(q)])[m-p:]
 
