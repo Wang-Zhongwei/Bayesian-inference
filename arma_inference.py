@@ -2,19 +2,18 @@ import numpy as np
 import pytensor.tensor as tt
 from arviz import summary
 from pymc import (HalfNormal, Metropolis, Model, Normal, forestplot,
-                  model_to_graphviz, sample)
-from pytensor.tensor import TensorVariable
-from numpy import ndarray
+                   model_to_graphviz, sample)
 
+import pytensor.tensor as tt
 
 class Loglike(tt.Op):
-    itypes = [tt.dvector]  # parameter vector
-    otypes = [tt.dscalar]  # log-likelihood scalar
+    itypes = [tt.dvector] # parameter vector
+    otypes = [tt.dscalar] # log-likelihood scalar
 
     def __init__(self, model):
         self.model = model
-        self.score = Score(self.model)
-
+        self.score = Score(self.model) 
+    
     def perform(self, node, inputs, outputs):
         theta, = inputs  # contains the vector of parameters
         llf = self.model.loglike(theta)
@@ -22,11 +21,11 @@ class Loglike(tt.Op):
 
     def grad(self, inputs, g):
         return [self.score(inputs[0])]
-
+    
 
 class Score(tt.Op):
-    itypes = [tt.dvector]  # parameter vector
-    otypes = [tt.dvector]  # score vector
+    itypes = [tt.dvector] # parameter vector
+    otypes = [tt.dvector] # score vector
 
     def __init__(self, model):
         self.model = model
@@ -57,41 +56,35 @@ def run_MCMC_ARMApq(y, draws, model):
     theta_sd = np.nan_to_num(theta_sd) + np.isnan(theta_sd) * 0.1
     m = p + q
     if len(y) < m:
-        raise ValueError(
-            'Data must be at least as long as the sum of p and q.')
-
+        raise ValueError('Data must be at least as long as the sum of p and q.')
+    
     with Model() as model9:
         # alpha = Normal('alpha', mu=0, sigma=10)
         # beta = Normal('beta', mu=0, sigma=10)
         sigma = HalfNormal('sigma', sigma=1)
         phi = Normal('phi', mu=phi_means, sigma=phi_sd, shape=p)
         theta = Normal('theta', mu=theta_means, sigma=theta_sd, shape=q)
-
-        def get_mu(y: ndarray) -> TensorVariable:
-            # convert y to numpy array
-            residuals = np.zeros_like(y)
-            for t in range(y.shape[0]):
-                ar_terms = np.dot(
-                    phi.eval(), y[t - p:t][::-1]) if t >= p else np.zeros_like(y[t])
-                ma_terms = np.dot(
-                    theta.eval(), residuals[t - q:t][::-1]) if t >= q else np.zeros_like(y[t])
-                residuals[t] = y[t] - ar_terms - ma_terms
             
-            mu = np.sum([phi.eval()[i] * y[p - (i + 1):-(i + 1)] for i in range(p)], axis=0)[q:] + np.sum([theta.eval()[i] * residuals[q-i-1: -i-1] for i in range(q)], axis=0)[p:] + residuals[m:]
+        y_eff = y[m:]
+        l = len(y)
+        y = tt.as_tensor(y) 
+        residuals = tt.zeros_like(y)
+        for t in range(l):
+            ar_terms = tt.dot(phi, y[t - p:t][::-1]) if t >= p else tt.zeros_like(y[t])
+            ma_terms = tt.dot(theta, residuals[t - q:t][::-1]) if t >= q else tt.zeros_like(y[t])
+            residuals = tt.set_subtensor(residuals[t], y[t] - ar_terms - ma_terms)
 
-            return tt.as_tensor_variable(mu)
-        
-        mu = get_mu(y)
-        likelihood = Normal('likelihood', mu=mu, sigma=sigma, observed=y[m:])
+        mu = tt.add(*[phi[i] * y[p - (i + 1):-(i + 1)] for i in range(p)])[q:] + tt.add(*[theta[i] * residuals[q-i-1 : -i-1] for i in range(q)])[p:] + residuals[m:]
+
+        likelihood = Normal('y_r', mu=mu, sigma=sigma, observed=y_eff)
 
     with model9:
         if q == 1:
-            step = Metropolis([phi])  # use metropolis for phi
+            step = Metropolis([phi]) # use metropolis for phi
         else:
             step = Metropolis([phi, theta])
         tune = draws // 2
-        trace = sample(draws, step=step, tune=tune,
-                       progressbar=True, chains=4, cores=-1)
+        trace = sample(draws, step=step, tune=tune, progressbar=True, chains=4, cores=-1)
 
     print(summary(trace, var_names=['phi', 'theta', 'sigma']))
     return trace
