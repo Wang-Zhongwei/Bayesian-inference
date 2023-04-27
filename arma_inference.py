@@ -3,7 +3,7 @@ import pytensor.tensor as tt
 from arviz import summary
 from pymc import (HalfNormal, Metropolis, Model, Normal, forestplot,
                    model_to_graphviz, sample)
-
+import pymc as pm
 import pytensor.tensor as tt
 
 class Loglike(tt.Op):
@@ -46,7 +46,7 @@ def run_MCMC_ARMApq(y, draws, model):
     q = model['order'][1]
     phi_means = model['tab']['params'][:p]
     phi_sd = model['tab']['bse'][:p]
-
+    print(phi_means, phi_sd)
     theta_means = model['tab']['params'][-q:]
     theta_sd = model['tab']['bse'][-q:]
 
@@ -55,36 +55,45 @@ def run_MCMC_ARMApq(y, draws, model):
     phi_sd = np.nan_to_num(phi_sd) + np.isnan(phi_sd) * 0.1
     theta_sd = np.nan_to_num(theta_sd) + np.isnan(theta_sd) * 0.1
     m = p + q
-    if len(y) < m:
-        raise ValueError('Data must be at least as long as the sum of p and q.')
-    
     with Model() as model9:
         # alpha = Normal('alpha', mu=0, sigma=10)
         # beta = Normal('beta', mu=0, sigma=10)
-        sigma = HalfNormal('sigma', sigma=1)
-        phi = Normal('phi', mu=phi_means, sigma=phi_sd, shape=p)
-        theta = Normal('theta', mu=theta_means, sigma=theta_sd, shape=q)
-            
-        y_eff = y[m:]
-        l = len(y)
-        y = tt.as_tensor(y) 
-        residuals = tt.zeros_like(y)
-        for t in range(l):
-            ar_terms = tt.dot(phi, y[t - p:t][::-1]) if t >= p else tt.zeros_like(y[t])
-            ma_terms = tt.dot(theta, residuals[t - q:t][::-1]) if t >= q else tt.zeros_like(y[t])
-            residuals = tt.set_subtensor(residuals[t], y[t] - ar_terms - ma_terms)
+        sigma = HalfNormal('sigma', sigma=10)
+        if p == 1:
+            phi = Normal('phi', mu=phi_means[0], sigma=phi_sd[0])
+        else:
+            phi = Normal('phi', mu=phi_means, sigma=phi_sd, shape=p)
+        if q ==1:
+            theta = Normal('theta', mu=theta_means[0], sigma=theta_sd[0])
+        else:
+            theta = Normal('theta', mu=theta_means, sigma=theta_sd, shape=q)
+        y_r = y[m:]
+        y = tt.as_tensor(y)
+        # x = tt.as_tensor(x)
+        # x_r = x[m:]
+        resids = y # - beta * x - alpha
 
-        mu = tt.add(*[phi[i] * y[p - (i + 1):-(i + 1)] for i in range(p)])[q:] + tt.add(*[theta[i] * residuals[q-i-1 : -i-1] for i in range(q)])[p:] + residuals[m:]
-
-        likelihood = Normal('y_r', mu=mu, sigma=sigma, observed=y_eff)
+        if p == 1:
+            u = phi * resids[p - 1: -1]
+        else:
+            u = tt.add(*[phi[i] * resids[p - (i + 1):-(i + 1)] for i in range(p)])
+        eps = resids[p:] - u
+        if q == 1:
+            v = theta * eps[q - 1: -1]
+        else:
+            v = tt.add(*[theta[i] * eps[q - (i + 1):-(i + 1)] for i in range(q)])
+        mu = u[q:] + v # + alpha + beta * x_r 
+        data = Normal('y_r', mu=mu, sigma=sigma, observed=y_r)
 
     with model9:
-        if q == 1:
-            step = Metropolis([phi]) # use metropolis for phi
-        else:
-            step = Metropolis([phi, theta])
-        tune = draws // 2
-        trace = sample(draws, step=step, tune=tune, progressbar=True, chains=4, cores=-1)
+        # if q == 1:
+        #     step = Metropolis([phi])
+        # else:
+        #     step = Metropolis([phi, theta])
+        tune = int(draws / 5)
+        trace = sample(draws, tune=tune, step=pm.NUTS(), progressbar=False)
 
-    print(summary(trace, var_names=['phi', 'theta', 'sigma']))
+    print(summary(trace))
+    #plt.show(forestplot(trace, varnames=['alpha', 'beta', 'sigma', 'phi', 'theta']))
+    #traceplot(trace, varnames=['alpha', 'beta', 'sigma', 'phi', 'theta'])
     return trace
